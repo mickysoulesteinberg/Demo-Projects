@@ -4,9 +4,9 @@ author: "Micky Steinberg"
 date: "9/20/2021"
 output: html_document
 params: 
-  state: WY
-  rank: 6
-  firstyear: 1912
+  state: CA
+  rank: 10
+  firstyear: 1920
   lastyear: 2020
   roll: 5
   high_rank: 100
@@ -18,7 +18,7 @@ library(readr)
 library(dplyr)
 library(ggplot2)
 library(knitr)
-library(RcppRoll)
+library(roll)
 library(tidyverse)
 
 state_df <- read.csv(paste('name-data/',params$state,'.csv',sep=''), header=FALSE)
@@ -61,28 +61,32 @@ gen_totals_df <- state_df %>%
   ungroup() %>%
   arrange(sex, year) %>%
   group_by(sex) %>%
-  mutate(gen_total_born = roll_sum(total_born,params$roll,fill=NA)) %>%
+  mutate(gen_total_born = roll_sum(total_born,params$roll,min_obs=1)) %>%
   ungroup()
 
 gen_state_df <- state_df %>%
   group_by(name,sex) %>%
   arrange(year) %>%
-  mutate(num_named=roll_sum(num_named,params$roll,fill=NA)) %>%
+  mutate(num_named=roll_sum(num_named,params$roll,min_obs=1)) %>%
   ungroup() %>%
   left_join(gen_totals_df, by=(c('sex'='sex','year'='year'))) %>%
   select(sex,year,name,num_named, total_born=gen_total_born) %>%
   group_by(year,sex) %>%
   mutate(rank=rank(-num_named, ties.method='first')) %>% 
   ungroup() %>%
-  mutate(popularity_index=100*num_named/total_born)
+  mutate(popularity_index=100*num_named/total_born, year=year-floor(params$roll/2)) %>% #roll_sum takes last 5 years, but need centered at current year
+  filter(year>=1910)
+
+gen_totals_df <- gen_totals_df %>%
+  mutate(year=year-floor(params$roll/2))
 ```
 
 
 
 
 ```{r show-gen-df, echo=FALSE}
-kable(head(filter(gen_state_df, sex=='F',year==params$firstyear)))
-kable(head(filter(gen_state_df, sex=='M',year==params$firstyear)))
+kable(head(filter(gen_state_df, sex=='F',year==params$firstyear) %>% arrange(rank)))
+kable(head(filter(gen_state_df, sex=='M',year==params$firstyear) %>% arrange(rank)))
 ```
 
 
