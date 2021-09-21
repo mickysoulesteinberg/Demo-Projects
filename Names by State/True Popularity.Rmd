@@ -1,0 +1,193 @@
+---
+title: "Top `r params$rank` Baby Names in `r params$state` years `r params$firstyear`-`r params$lastyear`"
+author: "Micky Steinberg"
+date: "9/20/2021"
+output: html_document
+params: 
+  state: WY
+  rank: 6
+  firstyear: 1960
+  lastyear: 1970
+  roll: 5
+  high_rank: 100
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+library(RcppRoll)
+library(tidyverse)
+
+state_df <- read.csv(paste(params$state,'.csv',sep=''), header=FALSE)
+colnames(state_df) <- c('state', 'sex', 'year', 'name', 'num_named')
+state_df$rank <- as.numeric(row.names(state_df))
+state_df <- state_df %>%
+  group_by(year,sex) %>%
+  mutate(rank=rank-min(rank)+1, popularity_index=100*num_named/sum(num_named))
+```
+
+### The Name Data
+We start with the dataframe ``r params$state`.csv` from SSA.gov, which contains information about the number of children born with a given name, grouped by year and sex. The `popularity_index` refers to the percent of children (of the given sex) born that year with a given name. Note that the popularity index is computed as the proportion of total number of babies reported by the SSA for a given year, which is slightly smaller than the true number of babies, as the SSA only includes names given to at least 5 babies in a given year. The true number of babies born is approximately .5% or 1.5% (for males and females, respectively), and doesn't fluctuate drastically from year to year.
+
+```{r show-first-df, echo=FALSE}
+kable(head(filter(state_df, sex=='F',year==params$firstyear)))
+kable(head(filter(state_df, sex=='M',year==params$firstyear)))
+```
+
+```{r define-top-names, include=FALSE}
+top_N_names <- function(df,N,sex_code) { #returns list of `sex_code` names which are top N at some point
+  df <- df %>%
+    filter(as.numeric(rank)<=N,sex==sex_code)
+  names <- unique(df$name)
+  return(names)
+}
+```
+
+```{r print-top-names, include=FALSE}
+#The names which appear as a top-`r params$rank` name for any year in `r params$firstyear`-`r params$lastyear` are:
+top_N_names(state_df,params$rank,'F')
+top_N_names(state_df,params$rank,'M')
+```
+
+Now we will define a "True Popularity Index" of a name in a given year. This will be the approximate popularity of a name within it's *generation* - that is, the prevalence of the name within a window of `r params$roll` years. I.e. for the year `r params$firstyear`, the popularity index is the (approximate) percent of children (of the given sex) born from `r params$firstyear-floor(params$roll/2)` to `r params$firstyear +floor(params$roll/2)` with the given name, and the ranking is determined by the number of children (of the given sex) born in that time frame with the given name.
+
+```{r generation-popularity-computation, include=FALSE}
+gen_totals_df <- state_df %>%
+  group_by(year,sex) %>%
+  summarize(total_born=sum(num_named)) %>%
+  ungroup() %>%
+  arrange(sex, year) %>%
+  group_by(sex) %>%
+  mutate(gen_total_born = roll_sum(total_born,params$roll,fill=NA)) %>%
+  ungroup()
+
+gen_state_df <- state_df %>%
+  group_by(name,sex) %>%
+  arrange(year) %>%
+  mutate(num_named=roll_sum(num_named,params$roll,fill=NA)) %>%
+  ungroup() %>%
+  left_join(gen_totals_df, by=(c('sex'='sex','year'='year'))) %>%
+  select(sex,year,name,num_named, total_born=gen_total_born) %>%
+  group_by(year,sex) %>%
+  mutate(rank=rank(-num_named)) %>% 
+  ungroup() %>%
+  mutate(popularity_index=100*num_named/total_born)
+```
+
+```{r rank-change-col}
+is_equal <- function(x,y) {
+  x==y
+}
+
+add_rank_change_col <- function(df) {
+  df %>%
+    group_by(name,sex) %>%
+    mutate(rank_change = !is_equal(rank,lag(rank,default=NA)))
+}
+
+gen_state_df <- add_rank_change_col(gen_state_df)
+```
+
+
+
+```{r show-gen-df, echo=FALSE}
+kable(head(filter(gen_state_df, sex=='F',year==params$firstyear)))
+kable(head(filter(gen_state_df, sex=='M',year==params$firstyear)))
+```
+
+
+```{r} 
+gen_state_df %>%
+  filter(year==1966, sex=='F') %>%
+  arrange(rank)
+
+```
+
+
+
+```{r print-top-gen-names, include=FALSE}
+# With this new ranking, the names which appear as a top-`r params$rank` name for any year in `r params$firstyear`-`r params$lastyear` are:
+top_N_names(gen_state_df,params$rank,'F')
+top_N_names(gen_state_df,params$rank,'M')
+```
+
+
+```{r labels}
+sexes <- c()
+sexes['M'] <- 'boys'
+sexes['F'] <- 'girls'
+
+```
+
+
+
+### Top names by popularity index over time
+
+First we'll just consider the popularity index of top names over time, that is, the proportion of children (by generation) over time with a top `r params$rank` name.
+```{r functions-to-get-plots, include=FALSE}
+top_names_function <- function(df,sex_code){
+  df %>%
+    filter(year>=params$firstyear, year<=params$lastyear, rank<=params$rank, sex==sex_code) %>%
+    mutate(rank=factor(rank, ordered=TRUE, levels=rev(c(1:params$rank))))
+}
+
+create_plot_popularity_index <- function(df,sex_code) {
+  arrange(top_names_function(df,sex_code),desc(rank)) %>%
+    ggplot(aes(x=year,y=popularity_index))
+}
+
+add_geoms_area_by_rank <- function(plot) {
+  plot + 
+    geom_area(aes(fill=rank)) +
+    scale_x_continuous(breaks=function(x) pretty(x))}
+
+add_labs <- function(plot, sex_code) {
+  plot +
+    labs(title=paste('Percent of',sexes[sex_code],'born in',params$state,'given top',params$rank,'name',params$firstyear,'-',params$lastyear))
+}
+
+create_stacked_area <- function(df,sex_code) {
+  add_labs(add_geoms_area_by_rank(create_plot_popularity_index(df,sex_code)),sex_code) +
+    labs(y=paste('percent of ',sexes[sex_code],'s with a rank <= ',params$rank,' name',sep=''))
+}
+
+```
+
+
+
+```{r the-plots, echo=FALSE}
+create_stacked_area(gen_state_df,'F')
+create_stacked_area(gen_state_df,'M')
+```
+
+
+
+
+```{r propotion-of-top, echo=FALSE}
+my_df <- top_names_function(gen_state_df,'F') %>% filter(rank==1)
+changes_vector <- my_df %>%
+  group_by(year) %>%
+  summarize(rank_change=(any(rank_change==TRUE)|year==params$firstyear))
+change_years <- which(changes_vector$rank_change)
+change_years <- change_years + params$firstyear -1
+change_years_df <- as.data.frame(change_years) %>%
+  left_join(my_df, by=c('change_years'='year'))
+change_years_df
+```
+
+```{r}
+create_stacked_area(gen_state_df,'F') + geom_vline(xintercept=change_years) 
+
+  #geom_vline(data = lines, aes(xintercept = vlines)) +
+  #geom_text(data = lines, aes(x = vlines, y = 0, label = labels))
+```
+
+
+
+
+
+
+
